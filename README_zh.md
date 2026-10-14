@@ -93,6 +93,9 @@ jobs:
 | `oidc-config` | 自定义 OBS 账号的 OIDC 客户端配置 JSON（如 `{"accountId":"...","region":"cn-southwest-2"}`）；留空使用默认 openlibing 账号 | 否 | - |
 
 > 文件级匹配保留给重命名/删除的产品代码文件，不作为输入暴露；检测到此类变更时自动执行。
+> 细粒度匹配开关（`min-affected`、`dedup`、`enable-line-match`、
+> `enable-function-match`、`skip-imports`）在 `action.yml` 中仍然存在；
+> 此处省略，保持默认值即可。
 
 ## 输出参数
 

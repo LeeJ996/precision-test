@@ -90,11 +90,6 @@ jobs:
 | `map-file` | Test case map file | No | `test_case_map.json` |
 | `coverage-dir` | Coverage data directory (required only when building the map) | No | `coverage` |
 | `build-map` | Rebuild test case mapping | No | `false` |
-| `min-affected` | Minimum affected lines threshold | No | `1` |
-| `dedup` | Enable deduplication | No | `false` |
-| `enable-line-match` | Enable line-level matching | No | `true` |
-| `enable-function-match` | Enable function-level matching | No | `true` |
-| `skip-imports` | Skip import statement lines | No | `false` |
 | `coverage-tar-path` | Coverage tar package path; when provided: upload to OBS, rebuild the map from it, upload the map, and reset the append table | No | - |
 | `append-on-merge` | Append the new test cases of this PR to the OBS append table (run on PR merge event; requires `github-pr` or `gitcode-pr`). Ignored for `sglang` | No | `false` |
 | `enable-append-table` | Merge the OBS append table into the recommended test list. Ignored for `sglang` | No | `true` |
@@ -105,6 +100,9 @@ jobs:
 
 > File-level matching is reserved for renamed/deleted product code files and is
 > not exposed as an input; it runs automatically when such changes are detected.
+> Fine-grained matching toggles (`min-affected`, `dedup`, `enable-line-match`,
+> `enable-function-match`, `skip-imports`) still exist in `action.yml`; they are
+> omitted here and generally safe to leave at their defaults.
 
 ## Outputs
 
