@@ -311,16 +311,23 @@ async function withObsClient<T>(
 }
 
 /**
- * Upload a Buffer to OBS. putObject on an existing key overwrites it, which
- * is exactly the single-copy semantics we want for all shared artifacts.
+ * Upload a local file to OBS via SourceFile (streamed by the SDK in chunks,
+ * O(1) memory — reading a large tar into a Buffer would hit Node's
+ * ~512MB single-string limit inside the SDK's logging path). putObject on
+ * an existing key overwrites it, which is exactly the single-copy semantics
+ * we want for all shared artifacts.
  */
 async function obsPutObject(
   obs: ObsContext,
   key: string,
-  body: Buffer,
+  filePath: string,
 ): Promise<void> {
   await withObsClient(obs.oidcConfig, async (client) => {
-    const resp = await client.putObject({ Bucket: obs.bucketName, Key: key, Body: body });
+    const resp = await client.putObject({
+      Bucket: obs.bucketName,
+      Key: key,
+      SourceFile: filePath,
+    });
     const msg = (resp && resp.CommonMsg) || {};
     if (!(msg.Status >= 200 && msg.Status < 300)) {
       const code = msg.Code ? ` [${msg.Code}]` : "";
@@ -329,6 +336,24 @@ async function obsPutObject(
       );
     }
   });
+}
+
+/**
+ * Upload in-memory text content to OBS by spilling it to a temp file first,
+ * so every upload path goes through the streamed SourceFile route.
+ */
+async function obsPutText(
+  obs: ObsContext,
+  key: string,
+  content: string,
+): Promise<void> {
+  const tmp = path.join(os.tmpdir(), `precision-obs-${process.pid}-${Date.now()}.txt`);
+  try {
+    fs.writeFileSync(tmp, content, "utf-8");
+    await obsPutObject(obs, key, tmp);
+  } finally {
+    fs.rmSync(tmp, { force: true });
+  }
 }
 
 /**
@@ -740,12 +765,11 @@ async function run(): Promise<void> {
           `coverage tar exceeds maximum size of ${MAX_COVERAGE_TAR_SIZE_MB}MB: ${tarPath}`,
         );
       }
-      const tarData = fs.readFileSync(tarPath);
-
-      // A1. Upload the tar (fixed key, single copy, overwrite mode).
+      // A1. Upload the tar (fixed key, single copy, overwrite mode). The SDK
+      // streams SourceFile in chunks — no full-file read into memory.
       const tarKey = `${obs.projectDir}/${OBS_TAR_KEY_NAME}`;
       console.log(`Uploading ${tarPath} to ${obs.bucketName}/${tarKey}...`);
-      await obsPutObject(obs, tarKey, tarData);
+      await obsPutObject(obs, tarKey, tarPath);
       console.log(`Coverage tar uploaded: ${tarKey} (overwrote previous copy)`);
 
       // A2. Extract the tar into a persistent workspace directory (subsequent
@@ -795,13 +819,13 @@ async function run(): Promise<void> {
       }
       const mapKey = `${obs.projectDir}/${OBS_MAP_KEY_NAME}`;
       console.log(`Uploading map to ${obs.bucketName}/${mapKey}...`);
-      await obsPutObject(obs, mapKey, fs.readFileSync(validatedMapFile));
+      await obsPutObject(obs, mapKey, validatedMapFile);
       console.log(`Test case map uploaded: ${mapKey}`);
 
       // A4. Reset the append table: the tar carries the full test set, so the
       // incremental table restarts from empty (overwrite with empty content).
       const appendKey = `${obs.projectDir}/${OBS_APPEND_KEY_NAME}`;
-      await obsPutObject(obs, appendKey, Buffer.from("", "utf-8"));
+      await obsPutText(obs, appendKey, "");
       console.log(`Append table reset: ${appendKey}`);
 
       // Publish outputs.
@@ -876,7 +900,7 @@ async function run(): Promise<void> {
       // Union preserving order: existing entries first, then the new ones.
       const merged = Array.from(new Set([...existing, ...newTests]));
       const appendKey = `${obs.projectDir}/${OBS_APPEND_KEY_NAME}`;
-      await obsPutObject(obs, appendKey, Buffer.from(merged.join("\n") + (merged.length ? "\n" : ""), "utf-8"));
+      await obsPutText(obs, appendKey, merged.join("\n") + (merged.length ? "\n" : ""));
       console.log(`Append table updated: ${existing.length} + ${newTests.length} new = ${merged.length} total (${appendKey})`);
       core.endGroup();
     } else if (appendOnMerge && coverageTarHandled) {
