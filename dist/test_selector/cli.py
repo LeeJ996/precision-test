@@ -90,6 +90,10 @@ def build_parser(adapter, default_repo: str) -> argparse.ArgumentParser:
         default=defaults["skip_imports"],
         help="Skip import statement lines (only effective for function-level matching, default off)",
     )
+    parser.add_argument(
+        "--new-tests-output",
+        help="Write the new test files extracted from the PR diff to this file (one per line, for the append-table workflow)",
+    )
     return parser
 
 
@@ -313,6 +317,14 @@ def main(argv=None, default_repo: str = "vllm_ascend") -> None:
         for test_name in test_names:
             f.write(test_name + "\n")
     print(f"\nResults saved to: {output_file}")
+
+    # Write new test files to a separate file when requested (append-table workflow)
+    if args.new_tests_output:
+        new_tests_path = _resolve_abs(BASE_DIR, args.new_tests_output)
+        with open(new_tests_path, "w", encoding="utf-8") as f:
+            for test_name in new_test_files:
+                f.write(test_name + "\n")
+        print(f"New test files ({len(new_test_files)}) saved to: {new_tests_path}")
 
 
 if __name__ == "__main__":

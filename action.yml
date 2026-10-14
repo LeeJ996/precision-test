@@ -49,6 +49,37 @@ inputs:
     description: 'Skip import statement lines (only effective for function-level matching)'
     required: false
     default: 'false'
+  coverage-tar-path:
+    description: 'Coverage tar package path; when provided: upload to OBS, rebuild test case map from it, upload the map and reset the append table'
+    required: false
+  append-on-merge:
+    description: 'Append the new test cases of this PR to the OBS append table (run on PR merge event; requires github-pr or gitcode-pr). Ignored for sglang'
+    required: false
+    default: 'false'
+  enable-append-table:
+    description: 'Merge the OBS append table into the recommended test list (default: true). Ignored for sglang'
+    required: false
+    default: 'true'
+  project-name:
+    description: 'Project name segment of the OBS path (e.g. MindIE-LLM, vllm-ascend); defaults to the current repository name'
+    required: false
+  chip-type:
+    description: 'Chip type segment of the OBS path (default: Ascend)'
+    required: false
+    default: 'Ascend'
+  obs-bucket-name:
+    description: 'OBS bucket for coverage tar / map / append table (default: op-case-result)'
+    required: false
+    default: 'op-case-result'
+  oidc-config:
+    description: 'OIDC client config JSON for a custom OBS account (e.g. {"accountId":"...","region":"cn-southwest-2"}); empty = default openlibing account'
+    required: false
+
+outputs:
+  upload-success:
+    description: 'Whether the coverage tar / map upload succeeded (set only when coverage-tar-path is provided)'
+  obs-url:
+    description: 'Public OBS URL of the uploaded coverage tar (set only when upload succeeded)'
 
 runs:
   using: 'node20'

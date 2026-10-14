@@ -13,5 +13,8 @@ node_modules/
 .DS_Store
 Thumbs.db
 
+# Python bytecode
+__pycache__/
+
 # Threat model reports
 threat-model-*/

@@ -22,7 +22,9 @@
   },
   "dependencies": {
     "@actions/core": "^1.11.1",
-    "@actions/exec": "^1.1.1"
+    "@actions/exec": "^1.1.1",
+    "@openlibing/huaweicloud-oidc-client": "0.0.6",
+    "esdk-obs-nodejs": "3.26.2"
   },
   "overrides": {
     "undici": "^6.28.0"
