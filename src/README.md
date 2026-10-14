@@ -219,6 +219,7 @@ python -m test_selector --repo torch_npu \
 | `--min-affected` / `-a` | 否        | 最少受影响行数阈值（默认：1）                                                                             |
 | `--dedup`               | 否        | 去重：相同覆盖行的测试只保留一个（默认关闭）                                                                      |
 | `--skip-imports`        | 否        | 函数级匹配时跳过 import 语句行（默认关闭）                                                                   |
+| `--new-tests-output`    | 否        | 将从 PR diff 提取的新增测试文件写入指定文件（每行一个），供 GitHub Action 层的追加表（append table）流程使用；不传则不写出        |
 
 ### 匹配粒度开关
 
@@ -519,6 +520,10 @@ tests/e2e/pull_request/four_card/context_parallel/test_accuracy
 test/registered/npu/basic_function/backends/test_npu_sampling_backend.py
 ...
 ```
+
+### 新增测试文件输出（`--new-tests-output`）
+
+传入 `--new-tests-output <path>` 时，PR diff 中提取的新增测试文件（与推荐列表同构，每行一个标准测试名）单独写入该文件。GitHub Action 层（`src/index.ts`）在 PR 合并事件中读取此文件，将其与 OBS 上的追加表合并去重后回传，实现"合入新用例"的增量积累；纯 Python 使用无需关心此参数。
 
 ---
 

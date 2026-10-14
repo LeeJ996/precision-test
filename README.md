@@ -1,5 +1,7 @@
 # precision-test
 
+[English](README.md) | [中文](README_zh.md)
+
 Coverage-based precision test selector for GitHub Actions. Analyzes code changes
 and selects relevant test cases based on coverage data with line and function
 granularity (file-level matching is reserved for renamed/deleted product code).
@@ -34,8 +36,6 @@ on:
 jobs:
   select-tests:
     runs-on: ubuntu-latest
-    outputs:
-      test-count: ${{ steps.selector.outputs.test-count }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -186,9 +186,10 @@ on:
 
 When recommending tests (PR validation runs), the append table is downloaded
 and merged into the recommended list (union, dedup) so that newly merged test
-cases are never missed even before the next full coverage upload. Download
-failures are warnings — the local recommendation still runs. On by default;
-ignored for `sglang`.
+cases are never missed even before the next full coverage upload. Requires a
+PR input (`github-pr` or `gitcode-pr`); skipped in coverage-upload mode (the
+table has just been reset). Download failures are warnings — the local
+recommendation still runs. On by default; ignored for `sglang`.
 
 ### Custom OBS account (`oidc-config`)
 
