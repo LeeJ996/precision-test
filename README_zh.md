@@ -84,11 +84,6 @@ jobs:
 | `map-file` | 测试用例 map 文件 | 否 | `test_case_map.json` |
 | `coverage-dir` | 覆盖率数据目录（仅构建 map 时需要） | 否 | `coverage` |
 | `build-map` | 重建测试用例映射 | 否 | `false` |
-| `min-affected` | 最少受影响行数阈值 | 否 | `1` |
-| `dedup` | 启用去重 | 否 | `false` |
-| `enable-line-match` | 启用行级匹配 | 否 | `true` |
-| `enable-function-match` | 启用函数级匹配 | 否 | `true` |
-| `skip-imports` | 跳过 import 语句行 | 否 | `false` |
 | `coverage-tar-path` | 覆盖率 tar 包路径；提供即触发：上传 OBS、从 tar 重建 map、上传 map、重置追加表 | 否 | - |
 | `append-on-merge` | 将本 PR 的新增用例追加到 OBS 追加表（在 PR 合并事件时运行；需配 `github-pr` 或 `gitcode-pr`）。sglang 忽略此项 | 否 | `false` |
 | `enable-append-table` | 将 OBS 追加表合并进推荐用例列表。sglang 忽略此项 | 否 | `true` |
