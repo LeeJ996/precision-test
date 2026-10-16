@@ -52,6 +52,10 @@ inputs:
   coverage-tar-path:
     description: 'Coverage tar package path; when provided: upload to OBS, rebuild test case map from it, upload the map and reset the append table'
     required: false
+  download-coverage:
+    description: 'Download the coverage tar and test case map from OBS ({chip-type}/{project-name} directory, previously uploaded via coverage-tar-path) and auto-fill source-dir / map-file / coverage-dir; lets callers pass github-pr only. Any download failure fails the run. Mutually exclusive with coverage-tar-path and build-map'
+    required: false
+    default: 'false'
   append-on-merge:
     description: 'Append the new test cases of this PR to the OBS append table (run on PR merge event; requires github-pr or gitcode-pr). Ignored for sglang'
     required: false
