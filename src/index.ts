@@ -21,6 +21,12 @@
  *   common parent of the test-case dirs; source dir = the bundled covstub).
  *   The discovered dirs are exported as PRECISION_COVERAGE_DIR /
  *   PRECISION_SOURCE_DIR for subsequent workflow steps.
+ * - Coverage download mode (download-coverage): download the tar + map
+ *   previously uploaded via coverage-tar-path, auto-fill source-dir /
+ *   map-file / coverage-dir and let the caller pass github-pr only. The tar
+ *   is streamed to disk via SaveAsFile (never buffered in memory) and its
+ *   layout is auto-discovered the same way as the upload mode. Any download
+ *   failure is fatal (the artifacts are required for selection).
  * - Append-on-merge (append-on-merge): extract the PR's new test cases and
  *   append them to the single append-table object on OBS (accumulate in place).
  * - Recommendation merge (enable-append-table): download the append table and
@@ -384,6 +390,38 @@ async function obsGetObject(
 }
 
 /**
+ * Download an object from OBS to a local file via SaveAsFile (streamed by
+ * the SDK to disk — O(1) memory, same rationale as the SourceFile upload:
+ * buffering a >512MB tar would exceed Node's string/Buffer limits). Unlike
+ * obsGetObject this throws on any failure — download-coverage is an explicit
+ * intent, so a missing or unreadable artifact must fail the run.
+ */
+async function obsGetObjectToFile(
+  obs: ObsContext,
+  key: string,
+  destPath: string,
+): Promise<void> {
+  await withObsClient(obs.oidcConfig, async (client) => {
+    fs.mkdirSync(path.dirname(destPath), { recursive: true });
+    const resp = await client.getObject({
+      Bucket: obs.bucketName,
+      Key: key,
+      SaveAsFile: destPath,
+    });
+    const msg = (resp && resp.CommonMsg) || {};
+    if (!(msg.Status >= 200 && msg.Status < 300)) {
+      const code = msg.Code ? ` [${msg.Code}]` : "";
+      throw new Error(
+        `OBS download failed for ${obs.bucketName}/${key}: HTTP ${msg.Status}${code}: ${msg.Message || "unknown error"}`,
+      );
+    }
+  });
+  if (!fs.existsSync(destPath) || fs.statSync(destPath).size === 0) {
+    throw new Error(`OBS download produced no local file for ${obs.bucketName}/${key}: ${destPath}`);
+  }
+}
+
+/**
  * Extract a coverage tar package with Python's tarfile module (the runtime
  * always has python3 available). Members are validated against path
  * traversal before extraction.
@@ -661,6 +699,7 @@ async function run(): Promise<void> {
 
     // Coverage upload / append table inputs.
     const coverageTarRaw = core.getInput("coverage-tar-path", { required: false });
+    const downloadCoverage = core.getInput("download-coverage", { required: false }) === "true";
     const projectNameRaw = core.getInput("project-name", { required: false });
     const chipTypeRaw = core.getInput("chip-type", { required: false }) || "Ascend";
     const obsBucketRaw = core.getInput("obs-bucket-name", { required: false }) || "op-case-result";
@@ -689,9 +728,10 @@ async function run(): Promise<void> {
     console.log(`  - enable-function-match: ${enableFunctionMatch}`);
     console.log(`  - skip-imports: ${skipImports}`);
     console.log(`  - coverage-tar-path: ${coverageTarRaw || "(not set, upload skipped)"}`);
+    console.log(`  - download-coverage: ${downloadCoverage}`);
     console.log(`  - append-on-merge: ${appendOnMerge}`);
     console.log(`  - enable-append-table: ${enableAppendTable}`);
-    if (coverageTarRaw || appendOnMerge || enableAppendTable) {
+    if (coverageTarRaw || appendOnMerge || enableAppendTable || downloadCoverage) {
       console.log(`  - project-name: ${projectNameRaw || "(fallback to repository name)"}`);
       console.log(`  - chip-type: ${chipTypeRaw}`);
       console.log(`  - obs-bucket-name: ${obsBucketRaw}`);
@@ -712,6 +752,23 @@ async function run(): Promise<void> {
       );
     }
 
+    // download-coverage is the OBS-backed variant of the local inputs: it
+    // fetches the tar + map uploaded by a previous coverage-tar-path run.
+    // Uploading and downloading in the same invocation makes no sense, and a
+    // downloaded map must not be rebuilt by build-map.
+    if (downloadCoverage && coverageTarRaw) {
+      throw new Error(
+        "download-coverage and coverage-tar-path are mutually exclusive; " +
+          "coverage-tar-path uploads the coverage data, download-coverage downloads it",
+      );
+    }
+    if (downloadCoverage && buildMap) {
+      throw new Error(
+        "download-coverage and build-map are mutually exclusive; " +
+          "the map is downloaded from OBS, not rebuilt from local coverage data",
+      );
+    }
+
     // Validate paths (resolve relative paths against the workspace).
     core.startGroup("Step 2: Validate paths");
     const validatedSourceDir = validatePath(sourceDir, "source-dir");
@@ -724,7 +781,7 @@ async function run(): Promise<void> {
 
     // Resolve the OBS context once for all optional features.
     let obs: ObsContext | null = null;
-    if (coverageTarRaw || appendOnMerge || enableAppendTable) {
+    if (coverageTarRaw || appendOnMerge || enableAppendTable || downloadCoverage) {
       let projectName = projectNameRaw;
       if (!projectName) {
         const repository = process.env.ATOMGIT_REPOSITORY || process.env.GITHUB_REPOSITORY || "";
@@ -743,13 +800,64 @@ async function run(): Promise<void> {
       throw new Error("append-on-merge requires github-pr or gitcode-pr");
     }
 
+    // Coverage download mode (D): fetch the tar + map previously uploaded by
+    // a coverage-tar-path run, auto-fill source-dir / map-file / coverage-dir
+    // and let the caller pass github-pr only. Any failure is fatal.
+    let effectiveSourceDir = validatedSourceDir;
+    let effectiveCoverageDir = validatedCoverageDir;
+    if (downloadCoverage && obs) {
+      core.startGroup("Step 3: Download coverage data from OBS");
+      const tarKey = `${obs.projectDir}/${OBS_TAR_KEY_NAME}`;
+      const downloadDir = path.join(process.cwd(), "coverage-download");
+      fs.rmSync(downloadDir, { recursive: true, force: true });
+      fs.mkdirSync(downloadDir, { recursive: true });
+      const tarPath = path.join(downloadDir, OBS_TAR_KEY_NAME);
+      console.log(`Downloading ${obs.bucketName}/${tarKey}...`);
+      await obsGetObjectToFile(obs, tarKey, tarPath);
+      console.log(
+        `Coverage tar downloaded: ${tarPath} (${(fs.statSync(tarPath).size / (1024 * 1024)).toFixed(1)}MB)`,
+      );
+
+      // Extract into a persistent workspace directory and discover the layout
+      // (same as the upload mode so both paths stay symmetric).
+      const extractDir = path.join(process.cwd(), "coverage-extract");
+      fs.rmSync(extractDir, { recursive: true, force: true });
+      fs.mkdirSync(extractDir, { recursive: true });
+      console.log(`Extracting tar to ${extractDir}...`);
+      await extractTar(tarPath, extractDir, "python3");
+
+      console.log("Discovering tar layout (coverage root / bundled source dir)...");
+      const layout = await discoverTarLayout(extractDir, repo);
+      effectiveCoverageDir = layout.coverageRoot || extractDir;
+      effectiveSourceDir = layout.sourceDir || validatedSourceDir;
+      console.log(`  Coverage root: ${effectiveCoverageDir} (${layout.testCaseCount} test case dir(s))`);
+      console.log(
+        `  Source dir: ${effectiveSourceDir}${layout.sourceDir ? " (bundled in tar)" : " (from source-dir input)"}`,
+      );
+      if (layout.testCaseCount === 0) {
+        core.warning(
+          `No test case directories found inside the tar for repo '${repo}'; ` +
+            `the selection may be incomplete — check the repo setting or the tar structure`,
+        );
+      }
+      // Export for subsequent workflow steps (two-step usage pattern).
+      core.exportVariable("PRECISION_COVERAGE_DIR", effectiveCoverageDir);
+      core.exportVariable("PRECISION_SOURCE_DIR", effectiveSourceDir);
+
+      // Download the map built by the last coverage-tar-path run.
+      const mapKey = `${obs.projectDir}/${OBS_MAP_KEY_NAME}`;
+      console.log(`Downloading map to ${validatedMapFile}...`);
+      await obsGetObjectToFile(obs, mapKey, validatedMapFile);
+      console.log(
+        `Test case map downloaded: ${mapKey} -> ${validatedMapFile} (${(fs.statSync(validatedMapFile).size / 1024).toFixed(1)}KB)`,
+      );
+      core.endGroup();
+    }
+
     // ===== Coverage upload mode (A) =====
     // Upload the full coverage tar, rebuild the map from it, upload the map,
     // and reset the append table. Any failure is fatal (no silent data loss).
     let coverageTarHandled = false;
-    // Source dir that later steps in this run should use: overridden with the
-    // covstub bundled in the tar (the workspace default may not exist).
-    let effectiveSourceDir = validatedSourceDir;
     if (coverageTarRaw && obs) {
       core.startGroup("Step 3: Upload coverage tar and rebuild map");
       const tarPath = validatePath(coverageTarRaw, "coverage-tar-path");
@@ -855,11 +963,12 @@ async function run(): Promise<void> {
         repo,
         githubPr,
         gitcodePr,
-        // When the coverage tar was just uploaded, use the source dir bundled
-        // in the tar (the workspace default may not exist in upload-only jobs).
+        // When the coverage tar was just uploaded or downloaded, use the
+        // effective dirs (bundled covstub / tar coverage root) instead of
+        // the workspace defaults which may not exist.
         sourceDir: effectiveSourceDir,
         mapFile: validatedMapFile,
-        coverageDir: validatedCoverageDir,
+        coverageDir: effectiveCoverageDir,
         // When the coverage tar was just uploaded, the freshly built map file
         // already exists locally — the Python CLI loads it (no rebuild needed).
         buildMap,

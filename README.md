@@ -91,6 +91,7 @@ jobs:
 | `coverage-dir` | Coverage data directory (required only when building the map) | No | `coverage` |
 | `build-map` | Rebuild test case mapping | No | `false` |
 | `coverage-tar-path` | Coverage tar package path; when provided: upload to OBS, rebuild the map from it, upload the map, and reset the append table | No | - |
+| `download-coverage` | Download the coverage tar and test case map from OBS (previously uploaded via `coverage-tar-path`) and auto-fill `source-dir` / `map-file` / `coverage-dir`; lets callers pass `github-pr` only. Any download failure fails the run. Mutually exclusive with `coverage-tar-path` and `build-map` | No | `false` |
 | `append-on-merge` | Append the new test cases of this PR to the OBS append table (run on PR merge event; requires `github-pr` or `gitcode-pr`). Ignored for `sglang` | No | `false` |
 | `enable-append-table` | Merge the OBS append table into the recommended test list. Ignored for `sglang` | No | `true` |
 | `project-name` | Project name segment of the OBS path (e.g. `MindIE-LLM`, `vllm-ascend`); defaults to the current repository name | No | repo name |
@@ -154,6 +155,30 @@ and `PRECISION_SOURCE_DIR` environment variables for subsequent steps.
   with:
     repo: vllm_ascend
     coverage-tar-path: coverage.tar.gz
+    project-name: vllm-ascend
+```
+
+### Coverage download mode (`download-coverage`)
+
+For PR validation runs, skip the local `source-dir` / `map-file` /
+`coverage-dir` inputs entirely: the action downloads the tar and map that a
+previous `coverage-tar-path` run uploaded (fixed keys under
+`precision/{chip-type}/{project-name}/`), extracts the tar to
+`<workspace>/coverage-extract/`, auto-discovers the layout (same rules as the
+upload mode) and then runs the normal selection — callers pass `github-pr`
+plus the OBS parameters only. The tar is streamed to disk via the OBS SDK's
+`SaveAsFile` (never buffered in memory). Any download failure fails the run
+(contrary to the append table, these artifacts are required for selection).
+Mutually exclusive with `coverage-tar-path` and `build-map`. Requires
+`permissions: id-token: write`.
+
+```yaml
+- name: Precision test (coverage downloaded from OBS)
+  uses: lb-actions/precision-test@v1.0.0
+  with:
+    repo: vllm_ascend
+    github-pr: vllm-project/vllm-ascend#${{ github.event.pull_request.number }}
+    download-coverage: 'true'
     project-name: vllm-ascend
 ```
 
