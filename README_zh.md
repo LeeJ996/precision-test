@@ -85,6 +85,7 @@ jobs:
 | `coverage-dir` | 覆盖率数据目录（仅构建 map 时需要） | 否 | `coverage` |
 | `build-map` | 重建测试用例映射 | 否 | `false` |
 | `coverage-tar-path` | 覆盖率 tar 包路径；提供即触发：上传 OBS、从 tar 重建 map、上传 map、重置追加表 | 否 | - |
+| `download-coverage` | 从 OBS 下载覆盖率 tar 包与 map（此前由 `coverage-tar-path` 上传）并自动回填 `source-dir` / `map-file` / `coverage-dir`；调用方只需传 `github-pr`。任何下载失败都会使运行失败。与 `coverage-tar-path`、`build-map` 互斥 | 否 | `false` |
 | `append-on-merge` | 将本 PR 的新增用例追加到 OBS 追加表（在 PR 合并事件时运行；需配 `github-pr` 或 `gitcode-pr`）。sglang 忽略此项 | 否 | `false` |
 | `enable-append-table` | 将 OBS 追加表合并进推荐用例列表。sglang 忽略此项 | 否 | `true` |
 | `project-name` | OBS 路径中的项目名段（如 `MindIE-LLM`、`vllm-ascend`）；缺省回退当前仓库名 | 否 | 仓库名 |
@@ -144,6 +145,27 @@ tar 包解压到 `<workspace>/coverage-extract/`，布局由仓库适配器规�
   with:
     repo: vllm_ascend
     coverage-tar-path: coverage.tar.gz
+    project-name: vllm-ascend
+```
+
+### 覆盖率下载模式（`download-coverage`）
+
+PR 验证运行时无需再传本地 `source-dir` / `map-file` / `coverage-dir`：
+action 会下载此前 `coverage-tar-path` 运行上传的 tar 包与 map（固定键名，位于
+`precision/{chip-type}/{project-name}/` 下），将 tar 解压到
+`<workspace>/coverage-extract/`，按与上传模式相同的规则自动发现布局，
+然后照常执行选择——调用方只需传 `github-pr` 与 OBS 参数。tar 通过 OBS SDK 的
+`SaveAsFile` 流式落盘（全程不进内存）。任何下载失败都会使运行失败（与追加表不同，
+这两样产物是选择所必需的）。与 `coverage-tar-path`、`build-map` 互斥。需要
+`permissions: id-token: write`。
+
+```yaml
+- name: Precision test (coverage downloaded from OBS)
+  uses: lb-actions/precision-test@v1.0.0
+  with:
+    repo: vllm_ascend
+    github-pr: vllm-project/vllm-ascend#${{ github.event.pull_request.number }}
+    download-coverage: 'true'
     project-name: vllm-ascend
 ```
 
