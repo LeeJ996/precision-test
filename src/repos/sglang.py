@@ -21,7 +21,7 @@ class SglangAdapter(RepoAdapter):
     test_case_dir_prefix = "____w__sglang__sglang__test__"
 
     #: 可纳入 PR 检测的测试根目录
-    TEST_ROOTS = ("test/registered/", "test/unit/", "test/e2e/", "test/integration/")
+    TEST_ROOTS = ("test/registered/", "test/unit/", "test/e2e/", "test/integration/", "python/sglang/multimodal_gen/test/")
 
     # ------------------------------------------------------------------
     # 覆盖率数据处理

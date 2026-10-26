@@ -108,7 +108,9 @@ class CodeChangeDetector:
           file has no ``from __future__ import annotations``.
         - First-time bindings are excluded for pure insertions (needs base
           content): every added line is an assignment binding simple names
-          that occur nowhere in the base file, with inert right-hand sides;
+          or self-attributes that occur nowhere in the base file, with inert
+          right-hand sides; self-attributes require a function scope whose
+          enclosing class has no custom __setattr__ (same-file ancestors only);
           no meaningful line ends in a comma (such lines are call/signature
           arguments, not statements); class-scope insertions follow dataclass
           field-order rules (plain assigns are not fields, annotated fields
