@@ -297,26 +297,33 @@ def _base_simple_name(base: ast.expr) -> str | None:
     return None
 
 
-def _class_consumes_annotations(cls_node: ast.ClassDef, class_map: dict) -> bool:
-    """True when the class (or a same-file ancestor) may consume
-    ``__annotations__`` at runtime: any decorator, metaclass/other class
-    keywords, an unresolvable base, or an annotation-consuming base such as
-    TypedDict / Protocol / BaseModel / Enum / NamedTuple."""
+def _iter_class_hierarchy(cls_node: ast.ClassDef, class_map: dict):
+    """Yield (class_node, [base names]) for the class and its same-file
+    ancestors, each visited once."""
     stack, seen = [cls_node], set()
     while stack:
         node = stack.pop()
         if id(node) in seen:
             continue
         seen.add(id(node))
-        if node.decorator_list or node.keywords:
-            return True
-        for base in node.bases:
-            name = _base_simple_name(base)
-            if name is None or name in _ANNOTATION_CONSUMING_BASES:
-                return True
-            parent = class_map.get(name)
+        bases = [_base_simple_name(b) for b in node.bases]
+        yield node, bases
+        for name in bases:
+            parent = class_map.get(name) if name else None
             if parent is not None and id(parent) not in seen:
                 stack.append(parent)
+
+
+def _class_consumes_annotations(cls_node: ast.ClassDef, class_map: dict) -> bool:
+    """True when the class (or a same-file ancestor) may consume
+    ``__annotations__`` at runtime: any decorator, metaclass/other class
+    keywords, an unresolvable base, or an annotation-consuming base such as
+    TypedDict / Protocol / BaseModel / Enum / NamedTuple."""
+    for node, bases in _iter_class_hierarchy(cls_node, class_map):
+        if node.decorator_list or node.keywords:
+            return True
+        if any(name is None or name in _ANNOTATION_CONSUMING_BASES for name in bases):
+            return True
     return False
 
 
@@ -339,8 +346,8 @@ def _collect_class_info(source: str) -> tuple[list[tuple], dict[str, ast.ClassDe
                   (a later definition shadows an earlier one);
     has_future  : the file has ``from __future__ import annotations``.
     known_names : every name the base file already binds or reads (Name
-                  occurrences, def/class names, import aliases, parameters),
-                  for first-time-binding detection.
+                  occurrences, Attribute tails, def/class names, import
+                  aliases, parameters), for first-time-binding detection.
     """
     tree = ast.parse(source)
     scopes = [
@@ -363,6 +370,8 @@ def _collect_class_info(source: str) -> tuple[list[tuple], dict[str, ast.ClassDe
     for node in ast.walk(tree):
         if isinstance(node, ast.Name):
             known_names.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            known_names.add(node.attr)
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             known_names.add(node.name)
             known_names.update(_arg_names(node.args))
@@ -478,14 +487,30 @@ def _pure_annotation_change_exempt(
     return not _class_consumes_annotations(node, class_map)
 
 
+def _target_name(target: ast.expr) -> str | None:
+    """Bound name of an assignment target: the identifier of a plain name
+    (``x = v``) or the attribute of a self-attribute (``self.x = v``);
+    None for anything else."""
+    if isinstance(target, ast.Name):
+        return target.id
+    if (
+        isinstance(target, ast.Attribute)
+        and isinstance(target.value, ast.Name)
+        and target.value.id == "self"
+    ):
+        return target.attr
+    return None
+
+
 def _parse_assignments(texts) -> list[tuple[ast.stmt, list[str]]] | None:
-    """Parse diff lines as a block of value-carrying simple-name assignments.
+    """Parse diff lines as a block of value-carrying assignments.
 
     Returns [(stmt, target_names), ...] when every meaningful (non-blank,
-    non-comment) line forms assignments (``x = v`` or ``x: T = v``) whose
-    targets are all plain names; None when the block is unparsable or
-    contains anything else (bare annotations, attribute/subscript targets,
-    tuple unpacking, any other statement).
+    non-comment) line forms assignments (``x = v``, ``x: T = v`` or the
+    self-attribute forms ``self.x = v`` / ``self.x: T = v``) whose targets
+    are all plain names or self-attributes; None when the block is
+    unparsable or contains anything else (bare annotations, non-self
+    attribute/subscript targets, tuple unpacking, any other statement).
     """
     lines = [t for t in texts if t.strip() and not t.strip().startswith("#")]
     if not lines:
@@ -498,13 +523,15 @@ def _parse_assignments(texts) -> list[tuple[ast.stmt, list[str]]] | None:
     stmts = []
     for stmt in tree.body:
         if isinstance(stmt, ast.Assign):
-            if not all(isinstance(t, ast.Name) for t in stmt.targets):
+            names = [_target_name(t) for t in stmt.targets]
+            if any(n is None for n in names):
                 return None
-            stmts.append((stmt, [t.id for t in stmt.targets]))
+            stmts.append((stmt, names))
         elif isinstance(stmt, ast.AnnAssign):
-            if stmt.value is None or not isinstance(stmt.target, ast.Name):
+            name = _target_name(stmt.target)
+            if stmt.value is None or name is None:
                 return None
-            stmts.append((stmt, [stmt.target.id]))
+            stmts.append((stmt, [name]))
         else:
             return None
     return stmts
@@ -558,20 +585,10 @@ def _class_dataclass_like(cls_node: ast.ClassDef, class_map: dict) -> bool:
     """True when the class or a same-file ancestor is decorated with
     @dataclass (annotated class-body statements then become __init__ fields
     whose order matters)."""
-    stack, seen = [cls_node], set()
-    while stack:
-        node = stack.pop()
-        if id(node) in seen:
-            continue
-        seen.add(id(node))
-        if any(_decorator_tail(d) == "dataclass" for d in node.decorator_list):
-            return True
-        for base in node.bases:
-            name = _base_simple_name(base)
-            parent = class_map.get(name) if name else None
-            if parent is not None and id(parent) not in seen:
-                stack.append(parent)
-    return False
+    return any(
+        any(_decorator_tail(d) == "dataclass" for d in node.decorator_list)
+        for node, _ in _iter_class_hierarchy(cls_node, class_map)
+    )
 
 
 def _last_field_line(cls_node: ast.ClassDef) -> int | None:
@@ -583,6 +600,29 @@ def _last_field_line(cls_node: ast.ClassDef) -> int | None:
             end = stmt.end_lineno or stmt.lineno
             last = end if last is None else max(last, end)
     return last
+
+
+def _enclosing_class(scopes: list[tuple], func: ast.AST) -> ast.ClassDef | None:
+    """Innermost class whose body contains the given function (None for a
+    module-level function)."""
+    containing = [
+        s
+        for s in scopes
+        if isinstance(s[3], ast.ClassDef) and s[0] <= func.lineno and func.end_lineno <= s[1]
+    ]
+    return max(containing, key=lambda s: s[0])[3] if containing else None
+
+
+def _class_defines_setattr(cls_node: ast.ClassDef, class_map: dict) -> bool:
+    """True when the class or a same-file ancestor defines __setattr__
+    (a new self-attribute assignment would run that hook at runtime)."""
+    return any(
+        any(
+            isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)) and stmt.name == "__setattr__"
+            for stmt in node.body
+        )
+        for node, _ in _iter_class_hierarchy(cls_node, class_map)
+    )
 
 
 def _new_binding_insert_reason(
@@ -599,14 +639,17 @@ def _new_binding_insert_reason(
     a first-time binding is itself an added line carrying its own anchor -
     the anchor here is noise (an import-time fingerprint in module/class
     scopes). Gates: no meaningful line ends in a comma (such lines are call
-    or signature arguments, not statements); the block is all simple-name
-    assignments; no target is a
+    or signature arguments, not statements); the block is all simple-name or
+    self-attribute assignments; no target is a
     dunder or already occurs anywhere in the base file (Name occurrences,
-    def/class/import/parameter bindings); right-hand sides are inert; and in
-    class scope the class must be plain or dataclass-like, where plain
-    assigns are never fields while annotated fields are only exempt when
-    inserted at or after the last existing field (a middle field insertion
-    would silently rebind positional constructor calls).
+    Attribute tails, def/class/import/parameter bindings); right-hand sides
+    are inert; and in class scope the class must be plain or dataclass-like,
+    where plain assigns are never fields while annotated fields are only
+    exempt when inserted at or after the last existing field (a middle field
+    insertion would silently rebind positional constructor calls).
+    Self-attribute bindings (``self.x = v``) are only exempt inside a
+    function body whose enclosing class does not define __setattr__
+    (same-file ancestors only).
     """
     if ann_ctx is None or not add_texts:
         return None
@@ -623,6 +666,17 @@ def _new_binding_insert_reason(
         if not _assign_rhs_lazy(stmt.value):
             return None
     scope = _insertion_scope(scopes, a, b, add_indent)
+    if any(
+        isinstance(t, ast.Attribute)
+        for stmt, _ in stmts
+        for t in (stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target])
+    ):
+        if not isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return None
+        cls = _enclosing_class(scopes, scope)
+        if cls is not None and _class_defines_setattr(cls, class_map):
+            return None
+        return "first-time binding of new self attribute(s)"
     if isinstance(scope, ast.ClassDef) and _class_consumes_annotations(scope, class_map):
         if not _class_dataclass_like(scope, class_map):
             return None
@@ -653,9 +707,11 @@ def _classify_candidate_pairs(
     annotation expressions unless the file has future annotations.
     First-time bindings are dropped when a pure insertion (no meaningful
     line ends in a comma - those are call/signature arguments) consists
-    solely of assignments binding simple names that occur nowhere in the
-    base file with inert right-hand sides (base code cannot read a name that
-    does not exist yet; readers added in the same PR carry their own anchors);
+    solely of assignments binding simple names or self-attributes that occur
+    nowhere in the base file with inert right-hand sides (base code cannot
+    read a name that does not exist yet; readers added in the same PR carry
+    their own anchors); self-attributes require a function scope whose
+    enclosing class has no custom __setattr__ (same-file ancestors only);
     in dataclass-like classes annotated fields are only dropped when inserted
     at or after the last existing field.
     Candidate pairs: without base content (or non-parseable Python) both sides
