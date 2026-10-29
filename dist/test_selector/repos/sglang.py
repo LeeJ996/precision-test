@@ -2,9 +2,8 @@
 
 - REPO_NAME = "sglang"，产品代码前缀 "python/sglang/"
 - 覆盖率库路径为 /__w/sglang/sglang/python/sglang/xxx.py，diff 路径为 python/sglang/xxx.py
-- 测试用例目录前缀 "____w__sglang__sglang__test__"，覆盖率文件直接放在测试目录下
-- 测试文件规则：test/registered/... 或 test/{unit,e2e,integration}/... 下 test_*.py
-- 测试名规范化：剥离 ____w__sglang__sglang__test__ 前缀，恢复 test/ 前缀
+- 测试文件规则：TEST_ROOTS 下 test_*.py
+- 测试名规范化：以 __sglang__sglang__ 为界拆分，后半按编码规则还原仓库相对路径（__ -> /，-- -> ::）
 """
 
 from fnmatch import fnmatchcase
@@ -18,31 +17,40 @@ class SglangAdapter(RepoAdapter):
 
     repo_name = "sglang"
     product_code_prefix = "python/sglang/"
-    test_case_dir_prefix = "____w__sglang__sglang__test__"
 
     #: 可纳入 PR 检测的测试根目录
     TEST_ROOTS = ("test/registered/", "test/unit/", "test/e2e/", "test/integration/", "python/sglang/multimodal_gen/test/")
 
+    #: 测试用例目录名中的仓库嵌套编码标记（CI workspace 前缀不固定，以此标记为界拆分）
+    _CI_MARKER = "__sglang__sglang__"
+
     # ------------------------------------------------------------------
     # 覆盖率数据处理
     # ------------------------------------------------------------------
+    def _strip_ci_prefix(self, name: str) -> str | None:
+        _head, sep, rest = name.partition(self._CI_MARKER)
+        return rest if sep else None
+
     def is_test_case_dir(self, name: str) -> bool:
-        return bool(self.test_case_dir_prefix) and name.startswith(self.test_case_dir_prefix)
+        rest = self._strip_ci_prefix(name)
+        if rest is None:
+            return False
+        # 剥掉 CI 前缀后必须落在测试树根下（编码形态，__ 编码 /）
+        encoded_roots = tuple(root.replace("/", "__") for root in self.TEST_ROOTS)
+        return rest.startswith(encoded_roots)
 
     def normalize_test_name(self, test_name: str) -> str:
         """
         将测试用例目录名转换为标准脚本名。
-        sglang（GitHub Actions 编码目录名 /__w/sglang/sglang/test/... -> ____w__sglang__sglang__test__...）：
-        - ____w__sglang__sglang__test__registered__npu__xxx__test_foo.py
+        - ____w__sglang__sglang__test__registered__npu__xxx__test_foo
           -> test/registered/npu/xxx/test_foo.py（文件级）
-        - ...--test_foo -> test/registered/npu/xxx/test_foo.py::test_foo（函数级）
+        - ____w__sglang__sglang__python__sglang__multimodal_gen__test__...__test_foo.py--TestX--test_bar[p]
+          -> python/sglang/multimodal_gen/test/.../test_foo.py::TestX::test_bar[p]（函数级/参数化）
         """
-        if not self.test_case_dir_prefix or not test_name.startswith(self.test_case_dir_prefix):
+        rest = self._strip_ci_prefix(test_name)
+        if rest is None:
             return test_name
-        # rest: 前缀之后的编码路径（如 registered__npu__xxx__test_foo.py）
-        rest = test_name[len(self.test_case_dir_prefix):]
-        # 恢复 test/ 前缀（前缀以 test__ 结尾，__ 编码 /）
-        result = "test/" + rest.replace("__", "/")
+        result = rest.replace("__", "/")
         # 处理函数级标记：.../test_foo.py--test_bar -> .../test_foo.py::test_bar
         result = result.replace("--", "::")
         # 文件级测试补 .py 后缀，避免已 .py 结尾时重复

@@ -12,6 +12,7 @@
 """
 
 import json
+import os
 import sqlite3
 from collections import defaultdict
 from pathlib import Path
@@ -19,6 +20,14 @@ from pathlib import Path
 from .function_parser import FunctionParser
 from .noise_filter import NoiseFilter
 from .repos.base import RepoAdapter
+
+
+def _long_path(p) -> str:
+    """Windows MAX_PATH(260) workaround: sqlite3 打不开超长绝对路径，加 \\?\ 前缀绕过。"""
+    s = str(p)
+    if os.name == "nt" and len(s) > 259 and not s.startswith("\\\\?\\"):
+        return "\\\\?\\" + s
+    return s
 
 
 class CoverageSelector:
@@ -76,7 +85,7 @@ class CoverageSelector:
         """
         lines = set()
         try:
-            conn = sqlite3.connect(cov_file)
+            conn = sqlite3.connect(_long_path(cov_file))
             cursor = conn.cursor()
 
             # 模糊路径匹配查找文件 ID
@@ -104,7 +113,7 @@ class CoverageSelector:
         """从单个覆盖率文件获取所有覆盖的产品代码文件（相对路径，委托仓库适配器）。"""
         files = set()
         try:
-            conn = sqlite3.connect(cov_file)
+            conn = sqlite3.connect(_long_path(cov_file))
             cursor = conn.cursor()
             cursor.execute("SELECT path FROM file")
             for (path,) in cursor.fetchall():
@@ -163,11 +172,21 @@ class CoverageSelector:
                                 file_lines_map[filename].update(lines)
 
             normalized_name = self.normalize_test_name(test_case)
-            self.test_case_map[normalized_name] = {
-                "files": dict(file_lines_map),
-                "file_count": len(file_lines_map),
-                "line_count": sum(len(v) for v in file_lines_map.values()),
-            }
+            # 参数化用例（...[param_id]）合并为无参数条目：入参实例共享同一函数代码，推荐粒度是函数
+            base_name = normalized_name.split("[", 1)[0]
+            entry = self.test_case_map.get(base_name)
+            if entry is None:
+                self.test_case_map[base_name] = {
+                    "files": dict(file_lines_map),
+                    "file_count": len(file_lines_map),
+                    "line_count": sum(len(v) for v in file_lines_map.values()),
+                }
+            else:
+                tgt = entry["files"]
+                for f, lines in file_lines_map.items():
+                    tgt.setdefault(f, set()).update(lines)
+                entry["file_count"] = len(tgt)
+                entry["line_count"] = sum(len(v) for v in tgt.values())
 
             print(f"    -> {len(file_lines_map)} files, {sum(len(v) for v in file_lines_map.values())} lines")
 
